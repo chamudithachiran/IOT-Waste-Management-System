@@ -1,0 +1,320 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Analytics – Smart Waste Ops</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { margin:0; font-family: system-ui, Arial; background-color:#f8fafc; color:#334155; }
+    header { padding:12px; background:#0f172a; color:#fff; font-weight:700; display:flex; justify-content:space-between; align-items:center; }
+    header a { color:#cbd5e1; font-size:14px; text-decoration:none; margin-left:16px; }
+    header a:hover { color:#fff; }
+    main { padding: 24px; }
+    .grid-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px; }
+    .card { background-color: #fff; border-radius: 8px; box-shadow: 0 1px 3px 0 rgba(0,0,0,0.05), 0 1px 2px -1px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
+    .card-header { padding: 12px 16px; border-bottom: 1px solid #e2e8f0; }
+    .card-title { margin:0; font-size:16px; font-weight:600; color:#1e293b; }
+    .card-body { padding: 16px; height: 300px; display: flex; align-items: center; justify-content: center; position: relative; }
+    .card-body.list { height: auto; max-height: 300px; overflow-y: auto; display:block; }
+    .alert-item { display:flex; justify-content:space-between; padding: 8px; border-bottom: 1px solid #f1f5f9; font-size:14px; }
+    .alert-item:last-child { border-bottom:none; }
+    .alert-item strong { color: #0f172a; }
+    .alert-item span { color: #64748b; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span>📈 Analytics Dashboard</span>
+    <div>
+        <a href="dashboard.html">⬅️ Back to Dashboard</a>
+    </div>
+  </header>
+  <main>
+    <div class="grid-container">
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">Collection Performance (Last 30 Days)</h2></div>
+            <div class="card-body"><canvas id="onTimeChart"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">Peak Waste Generation Days</h2></div>
+            <div class="card-body"><canvas id="peakDaysChart"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">Average Fill Level at Collection</h2></div>
+            <div class="card-body"><canvas id="avgFillLevelChart"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">Average Weight at Collection</h2></div>
+            <div class="card-body"><canvas id="avgWeightChart"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">Real-time Bin Fill Levels</h2></div>
+            <div class="card-body"><canvas id="binLevelsChart"></canvas></div>
+        </div>
+        <div class="card">
+            <div class="card-header"><h2 class="card-title">Recent Alerts (Last 7 Days) 🚨</h2></div>
+            <div class="card-body list" id="alertList"></div>
+        </div>
+    </div>
+  </main> 
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.6.8/firebase-firestore.js"></script>
+  <script>
+    // ---------- CONFIGURATION ----------
+    const firebaseConfig = {
+  apiKey: "AIzaSyAGhhM3JhKMkU7oIfe7zrxulqmiGgC2Z0E",
+  authDomain: "iot-analytics-d5a89.firebaseapp.com",
+  projectId: "iot-analytics-d5a89",
+  storageBucket: "iot-analytics-d5a89.firebasestorage.app",
+  messagingSenderId: "661310383456",
+  appId: "1:661310383456:web:7f70e9b945a1bbda9f6a05"
+    };
+
+    const collectionSchedule = {
+        'BIN_K01': { days: [1, 3, 5] }, // Mon, Wed, Fri
+        'BIN_K02': { days: [2, 4] },    // Tue, Thu
+        'BIN_K03': { days: [0, 1, 2, 3, 4, 5, 6] } // Daily
+    };
+    const STATIC_BINS = ['BIN_K01', 'BIN_K02', 'BIN_K03', 'BIN_A08', 'BIN_C14'];
+
+    // ---------- INITIALIZE FIREBASE ----------
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // ---------- CHART RENDERING FUNCTIONS ----------
+
+    function renderOnTimeChart(onTime, late) {
+        const ctx = document.getElementById('onTimeChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: ['On Schedule', 'Off Schedule'],
+                datasets: [{ data: [onTime, late], backgroundColor: ['#22c55e', '#ef4444'], borderColor: '#fff', borderWidth: 4 }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, cutout: '70%', plugins: { legend: { position: 'bottom' }}}
+        });
+    }
+
+    function renderPeakDaysChart(data) {
+        const ctx = document.getElementById('peakDaysChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+                datasets: [{ label: 'Total Collections', data: data, backgroundColor: '#3b82f6', borderRadius: 4 }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false }} }
+        });
+    }
+
+    function renderAvgFillLevelChart(labels, data) {
+        const ctx = document.getElementById('avgFillLevelChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Average Fill Level at Collection (%)',
+                    data: data,
+                    backgroundColor: data.map(val => val > 85 ? '#ef4444' : (val > 60 ? '#f97316' : '#22c55e')),
+                    borderRadius: 4
+                }]
+            },
+            options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { max: 100, beginAtZero: true } }, plugins: { legend: { display: false }} }
+        });
+    }
+
+    function renderAvgWeightChart(labels, data) {
+        const ctx = document.getElementById('avgWeightChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Average Weight at Collection (kg)',
+                    data: data,
+                    backgroundColor: '#6366f1',
+                    borderRadius: 4
+                }]
+            },
+            options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { beginAtZero: true } }, plugins: { legend: { display: false }} }
+        });
+    }
+
+    function renderBinLevelsChart(labels, data) {
+        const ctx = document.getElementById('binLevelsChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Current Fill Level (%)',
+                    data: data,
+                    backgroundColor: data.map(val => val > 85 ? '#ef4444' : (val > 60 ? '#f97316' : '#22c55e')),
+                    borderRadius: 4
+                }]
+            },
+            options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, scales: { x: { max: 100, beginAtZero: true } }, plugins: { legend: { display: false }} }
+        });
+    }
+
+    function renderAlertList(alerts) {
+        const container = document.getElementById('alertList');
+        if (!alerts || alerts.length === 0) {
+            container.innerHTML = '<div style="text-align:center; color:#94a3b8; padding:16px;">No flip alerts in the last 7 days.</div>';
+            return;
+        }
+        container.innerHTML = alerts.map(alert => {
+            const timestamp = alert.timestamp ? new Date(alert.timestamp.toDate()).toLocaleString() : 'No date';
+            const binId = alert.bin_id || 'Unknown Bin';
+            return `
+                <div class="alert-item">
+                    <strong>${binId}</strong>
+                    <span>${timestamp}</span>
+                </div>`;
+        }).join('');
+    }
+
+    // ---------- DATA FETCHING & PROCESSING FUNCTIONS ----------
+
+    async function fetchOnTimeData() {
+        try {
+            const thirtyDaysAgo = new Date(new Date().setDate(new Date().getDate() - 30));
+            const snapshot = await db.collection('collections')
+                .where('timestamp', '>=', thirtyDaysAgo)
+                .get();
+
+            if (snapshot.empty) {
+                const chartBody = document.getElementById('onTimeChart').parentElement;
+                chartBody.innerHTML = '<div style="text-align:center; color:#94a3b8; padding:16px;">No collection data found for the last 30 days.</div>';
+                return;
+            }
+
+            let onTime = 0, late = 0;
+            snapshot.docs.forEach(doc => {
+                const log = doc.data();
+                if (log.action !== 'collected') return;
+                if (!log.timestamp || !log.bin_id) return;
+
+                const collectionDate = log.timestamp.toDate();
+                const collectionDay = collectionDate.getDay();
+                const collectionHour = collectionDate.getHours();
+
+                const schedule = collectionSchedule[log.bin_id];
+
+                if (schedule && schedule.days.includes(collectionDay) && collectionHour >= 6 && collectionHour < 10) {
+                    onTime++;
+                } else {
+                    late++;
+                }
+            });
+            renderOnTimeChart(onTime, late);
+        } catch (error) {
+            console.error("Error fetching on-time data:", error);
+            const chartBody = document.getElementById('onTimeChart').parentElement;
+            chartBody.innerHTML = '<div style="text-align:center; color:#ef4444; padding:16px;">Error loading chart. Check console for details.</div>';
+        }
+    }
+
+    async function fetchPeakDaysData() {
+        const snapshot = await db.collection('collections').where('action', '==', 'collected').get();
+        const dailyCounts = Array(7).fill(0);
+        snapshot.docs.forEach(doc => {
+            const log = doc.data();
+            if (log.timestamp) {
+                const day = log.timestamp.toDate().getDay();
+                dailyCounts[day]++;
+            }
+        });
+        renderPeakDaysChart(dailyCounts);
+    }
+
+    async function fetchAvgFillLevelData() {
+        const snapshot = await db.collection('collections').get();
+        const bins = {}; // { bin_id: { totalFill: number, count: number } }
+
+        snapshot.docs.forEach(doc => {
+            const log = doc.data();
+            if (log.bin_id && log.fill_level_at_collection !== null) {
+                if (!bins[log.bin_id]) {
+                    bins[log.bin_id] = { totalFill: 0, count: 0 };
+                }
+                bins[log.bin_id].totalFill += log.fill_level_at_collection;
+                bins[log.bin_id].count++;
+            }
+        });
+
+        const labels = Object.keys(bins);
+        const data = labels.map(binId => bins[binId].totalFill / bins[binId].count);
+
+        renderAvgFillLevelChart(labels, data);
+    }
+
+    async function fetchAvgWeightData() {
+        const snapshot = await db.collection('collections').get();
+        const bins = {}; // { bin_id: { totalWeight: number, count: number } }
+
+        snapshot.docs.forEach(doc => {
+            const log = doc.data();
+            if (log.bin_id && log.weight_kg !== null) {
+                if (!bins[log.bin_id]) {
+                    bins[log.bin_id] = { totalWeight: 0, count: 0 };
+                }
+                bins[log.bin_id].totalWeight += log.weight_kg;
+                bins[log.bin_id].count++;
+            }
+        });
+
+        const labels = Object.keys(bins);
+        const data = labels.map(binId => bins[binId].totalWeight / bins[binId].count);
+
+        renderAvgWeightChart(labels, data);
+    }
+
+    async function fetchBinLevelsData() {
+        const labels = [], data = [];
+        for (const binId of STATIC_BINS) {
+            const snapshot = await db.collection('ultrasonic_data')
+                .where('bin_id', '==', binId)
+                .orderBy('timestamp', 'desc')
+                .limit(1)
+                .get();
+
+            let fillLevel = 0;
+            if (!snapshot.empty) {
+                const docData = snapshot.docs[0].data();
+                fillLevel = Math.min(100, Math.max(0, 100 - (docData.distance_cm / 50 * 100)));
+            }
+            labels.push(binId);
+            data.push(parseFloat(fillLevel.toFixed(1)));
+        }
+        renderBinLevelsChart(labels, data);
+    }
+
+    async function fetchAlerts() {
+        const sevenDaysAgo = new Date(new Date().setDate(new Date().getDate() - 7));
+        const snapshot = await db.collection('alerts')
+            .where('type', '==', 'Flip Alert')
+            .where('timestamp', '>=', sevenDaysAgo)
+            .orderBy('timestamp', 'desc')
+            .limit(20)
+            .get();
+
+        const alerts = snapshot.docs.map(doc => doc.data());
+        renderAlertList(alerts);
+    }
+
+    // ---------- INITIALIZE PAGE ----------
+    document.addEventListener('DOMContentLoaded', () => {
+        fetchOnTimeData();
+        fetchPeakDaysData();
+        fetchAvgFillLevelData();
+        fetchAvgWeightData();
+        fetchBinLevelsData();
+        fetchAlerts();
+    });
+  </script>
+</body>
+</html>
